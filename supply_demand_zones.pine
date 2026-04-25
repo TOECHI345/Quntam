@@ -1,0 +1,142 @@
+//@version=5
+indicator("MTF Supply & Demand Zones", overlay=true, max_boxes_count=500, max_lines_count=500)
+
+// ============================================================
+// INPUTS
+// ============================================================
+grpTF   = "Timeframes"
+tf1     = input.timeframe("15",  "TF1", group=grpTF)
+tf2     = input.timeframe("60",  "TF2", group=grpTF)
+tf3     = input.timeframe("240", "TF3", group=grpTF)
+
+grpZone = "Zone Detection"
+pivotLen   = input.int(5,   "Pivot Strength",  minval=2, maxval=20, group=grpZone)
+extendBars = input.int(200, "Extend Zones (bars)", minval=20, group=grpZone)
+useWick    = input.bool(true, "Use Wicks for Zone Edges", group=grpZone, tooltip="OFF = use candle body only")
+volFilter  = input.bool(true, "Require Above-Avg Volume on Pivot", group=grpZone)
+volMult    = input.float(1.2, "Volume Multiplier", minval=0.5, step=0.1, group=grpZone)
+
+grpDisp = "Display"
+showTF1   = input.bool(true,  "Show TF1", group=grpDisp)
+showTF2   = input.bool(true,  "Show TF2", group=grpDisp)
+showTF3   = input.bool(true,  "Show TF3", group=grpDisp)
+deleteOnBreak = input.bool(true, "Delete Zone When Closed Through", group=grpDisp)
+showLabels = input.bool(true, "Show Zone Labels", group=grpDisp)
+
+grpClr = "Colors"
+supColor1 = input.color(color.new(color.red,    0), "Supply TF1", group=grpClr, inline="t1")
+demColor1 = input.color(color.new(color.lime,   0), "Demand TF1", group=grpClr, inline="t1")
+supColor2 = input.color(color.new(color.orange, 0), "Supply TF2", group=grpClr, inline="t2")
+demColor2 = input.color(color.new(color.green,  0), "Demand TF2", group=grpClr, inline="t2")
+supColor3 = input.color(color.new(color.maroon, 0), "Supply TF3", group=grpClr, inline="t3")
+demColor3 = input.color(color.new(color.teal,   0), "Demand TF3", group=grpClr, inline="t3")
+fillTrans = input.int(82, "Fill Transparency", minval=0, maxval=100, group=grpClr)
+
+// ============================================================
+// ZONE DETECTION (per timeframe via request.security)
+// ============================================================
+// Returns [supplyTop, supplyBot, demandTop, demandBot, freshSupply, freshDemand]
+// Edges anchored to the pivot bar (offset back by pivotLen).
+detectZones() =>
+    ph = ta.pivothigh(high, pivotLen, pivotLen)
+    pl = ta.pivotlow(low,  pivotLen, pivotLen)
+
+    volAvg = ta.sma(volume, 20)
+    volOK  = not volFilter or volume[pivotLen] >= volAvg[pivotLen] * volMult
+
+    sTop = na(ph) ? na : high[pivotLen]
+    sBot = na(ph) ? na : (useWick ? math.max(open[pivotLen], close[pivotLen]) : math.max(open[pivotLen], close[pivotLen]))
+    dTop = na(pl) ? na : (useWick ? math.min(open[pivotLen], close[pivotLen]) : math.min(open[pivotLen], close[pivotLen]))
+    dBot = na(pl) ? na : low[pivotLen]
+
+    freshSupply = not na(ph) and volOK
+    freshDemand = not na(pl) and volOK
+
+    [sTop, sBot, dTop, dBot, freshSupply, freshDemand]
+
+[sTop1, sBot1, dTop1, dBot1, fS1, fD1] = request.security(syminfo.tickerid, tf1, detectZones(), lookahead=barmerge.lookahead_off)
+[sTop2, sBot2, dTop2, dBot2, fS2, fD2] = request.security(syminfo.tickerid, tf2, detectZones(), lookahead=barmerge.lookahead_off)
+[sTop3, sBot3, dTop3, dBot3, fS3, fD3] = request.security(syminfo.tickerid, tf3, detectZones(), lookahead=barmerge.lookahead_off)
+
+// ============================================================
+// ZONE STORAGE & DRAWING
+// ============================================================
+var box[]   zoneBoxes = array.new_box()
+var string[] zoneTags  = array.new_string()
+
+drawZone(top, bot, label, fillCol, borderCol) =>
+    if not na(top) and not na(bot) and top > bot
+        b = box.new(
+             left        = bar_index,
+             right       = bar_index + extendBars,
+             top         = top,
+             bottom      = bot,
+             bgcolor     = color.new(fillCol, fillTrans),
+             border_color= color.new(borderCol, 20),
+             border_width= 1,
+             text        = showLabels ? label : "",
+             text_color  = color.white,
+             text_size   = size.tiny,
+             text_halign = text.align_left,
+             text_valign = text.align_center)
+        array.push(zoneBoxes, b)
+        array.push(zoneTags, label)
+
+// fresh-zone gating: only draw on the bar a new pivot prints
+if showTF1 and fS1 and (na(fS1[1]) or not fS1[1])
+    drawZone(sTop1, sBot1, "SUPPLY " + tf1, supColor1, supColor1)
+if showTF1 and fD1 and (na(fD1[1]) or not fD1[1])
+    drawZone(dTop1, dBot1, "DEMAND " + tf1, demColor1, demColor1)
+
+if showTF2 and fS2 and (na(fS2[1]) or not fS2[1])
+    drawZone(sTop2, sBot2, "SUPPLY " + tf2, supColor2, supColor2)
+if showTF2 and fD2 and (na(fD2[1]) or not fD2[1])
+    drawZone(dTop2, dBot2, "DEMAND " + tf2, demColor2, demColor2)
+
+if showTF3 and fS3 and (na(fS3[1]) or not fS3[1])
+    drawZone(sTop3, sBot3, "SUPPLY " + tf3, supColor3, supColor3)
+if showTF3 and fD3 and (na(fD3[1]) or not fD3[1])
+    drawZone(dTop3, dBot3, "DEMAND " + tf3, demColor3, demColor3)
+
+// ============================================================
+// MAINTAIN ZONES — extend right edge, prune broken zones
+// ============================================================
+if array.size(zoneBoxes) > 0
+    for i = array.size(zoneBoxes) - 1 to 0
+        b   = array.get(zoneBoxes, i)
+        top = box.get_top(b)
+        bot = box.get_bottom(b)
+
+        box.set_right(b, bar_index + extendBars)
+
+        // body close through the zone = mitigated/broken
+        broken = (close > top and close[1] <= top) or (close < bot and close[1] >= bot)
+        if deleteOnBreak and broken
+            box.delete(b)
+            array.remove(zoneBoxes, i)
+            array.remove(zoneTags,  i)
+
+// ============================================================
+// ALERTS — fire when price enters a zone
+// ============================================================
+inSupply1 = not na(sTop1) and high >= sBot1 and low <= sTop1
+inDemand1 = not na(dTop1) and high >= dBot1 and low <= dTop1
+inSupply2 = not na(sTop2) and high >= sBot2 and low <= sTop2
+inDemand2 = not na(dTop2) and high >= dBot2 and low <= dTop2
+inSupply3 = not na(sTop3) and high >= sBot3 and low <= sTop3
+inDemand3 = not na(dTop3) and high >= dBot3 and low <= dTop3
+
+alertcondition(inSupply1 or inSupply2 or inSupply3, "Price in Supply Zone", "Price tagged a SUPPLY zone")
+alertcondition(inDemand1 or inDemand2 or inDemand3, "Price in Demand Zone", "Price tagged a DEMAND zone")
+
+// HTF tag = highest-conviction
+htfSupplyTag = inSupply3
+htfDemandTag = inDemand3
+alertcondition(htfSupplyTag, "HTF Supply Tag", "Price tagged an HTF supply zone")
+alertcondition(htfDemandTag, "HTF Demand Tag", "Price tagged an HTF demand zone")
+
+// ============================================================
+// VISUAL: highlight bar background when in any zone
+// ============================================================
+bgcolor(inSupply1 or inSupply2 or inSupply3 ? color.new(color.red,  92) : na, title="Supply Tag BG")
+bgcolor(inDemand1 or inDemand2 or inDemand3 ? color.new(color.lime, 92) : na, title="Demand Tag BG")
