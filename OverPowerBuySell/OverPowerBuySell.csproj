@@ -1,0 +1,74 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    OverPowerBuySell – ATAS custom indicator (order-flow BUY/SELL signals)
+
+    Default build (classic ATAS references, works in classic ATAS AND in ATAS X):
+        dotnet build -c Release
+    ATAS X–only machine (no classic ATAS installed), native cross-platform build:
+        dotnet build -c Release -p:Platform=Cross
+
+    Check the platform runtime before building: open OFT.Platform.runtimeconfig.json (classic) or
+    OFT.PlatformX.runtimeconfig.json (ATAS X) in the install folder and match "tfm" (net10.0 / net8.0).
+    If it says net8.0, change net10.0 → net8.0 below (or multi-target: net8.0-windows;net10.0-windows).
+
+    Copy the built OverPowerBuySell.dll into
+        Documents\ATAS\Indicators
+    then add "Over Power Buy/Sell" from the indicator list.
+  -->
+
+  <PropertyGroup>
+    <AssemblyName>OverPowerBuySell</AssemblyName>
+    <RootNamespace>OverPowerOF</RootNamespace>
+    <!-- ATAS picks the highest assembly version when two copies exist: bump on every release -->
+    <Version>1.0.0</Version>
+    <AssemblyVersion>1.0.0.0</AssemblyVersion>
+    <FileVersion>1.0.0.0</FileVersion>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <Platforms>AnyCPU;Cross</Platforms>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <!-- ATAS assemblies are loaded from the platform; never copy them next to the indicator -->
+    <CopyLocalLockFileAssemblies>false</CopyLocalLockFileAssemblies>
+  </PropertyGroup>
+
+  <!-- Classic ATAS (WPF) – default -->
+  <PropertyGroup Condition=" '$(Platform)' != 'Cross' ">
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <ATAS_BASE Condition=" '$(ATAS_BASE)' == '' ">C:\Program Files (x86)\ATAS Platform</ATAS_BASE>
+  </PropertyGroup>
+
+  <!-- ATAS X (Avalonia) native build -->
+  <PropertyGroup Condition=" '$(Platform)' == 'Cross' ">
+    <TargetFramework>net10.0</TargetFramework>
+    <UseWPF>false</UseWPF>
+    <DefineConstants>$(DefineConstants);CROSS_PLATFORM</DefineConstants>
+    <!-- Windows default. macOS: /Applications/ATAS X.app/Contents/MonoBundle -->
+    <ATAS_BASE Condition=" '$(ATAS_BASE)' == '' ">C:\Program Files\ATAS X</ATAS_BASE>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Reference Include="ATAS.Indicators">
+      <HintPath>$(ATAS_BASE)\ATAS.Indicators.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="ATAS.DataFeedsCore">
+      <HintPath>$(ATAS_BASE)\ATAS.DataFeedsCore.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="OFT.Rendering">
+      <HintPath>$(ATAS_BASE)\OFT.Rendering.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="System.Drawing.Common" Condition=" '$(Platform)' == 'Cross' ">
+      <HintPath>$(ATAS_BASE)\System.Drawing.Common.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Utils.Common">
+      <HintPath>$(ATAS_BASE)\Utils.Common.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+
+</Project>
