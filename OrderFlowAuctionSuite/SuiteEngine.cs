@@ -634,6 +634,33 @@ namespace OrderFlowSuite
         public string Label = "";
     }
 
+    /// <summary>A merged, scored support/resistance level with confluence reasons and a live test status.</summary>
+    public sealed class KeyZone
+    {
+        public long Tick;
+        public bool Resistance;
+        public int Score;
+        public readonly List<string> Reasons = new();
+        public int Tests;
+        public int CreatedBar, LastSeenBar = -1, LastTestBar = -1;
+        public bool Broken, Flipped;
+
+        public string Status =>
+            Broken ? "BROKEN" :
+            Flipped ? "FLIPPED" :
+            Tests == 0 ? "FRESH" :
+            Tests == 1 ? "1ST TEST" :
+            Tests >= 3 ? "HOLDING" : "TESTED";
+
+        public string ReasonText(int max)
+        {
+            var sb = new StringBuilder();
+            int n = Math.Min(max, Reasons.Count);
+            for (int i = 0; i < n; i++) { if (i > 0) sb.Append(" + "); sb.Append(Reasons[i]); }
+            return sb.ToString();
+        }
+    }
+
     public sealed class DisplaySnapshot
     {
         public double TickSize = 0.01;
@@ -642,6 +669,7 @@ namespace OrderFlowSuite
         public MarketState State;
         public string StateNote = "";
         public LevelLine[] Levels = Array.Empty<LevelLine>();
+        public KeyZone[] KeyZones = Array.Empty<KeyZone>();
         public Zone[] Zones = Array.Empty<Zone>();
         public SignalMark[] Signals = Array.Empty<SignalMark>();
         public (int bar, double v, double u1, double d1)[] Vwap = Array.Empty<(int, double, double, double)>();
@@ -671,6 +699,7 @@ namespace OrderFlowSuite
         private readonly BalanceTrendDetector _balance = new();
         private readonly VwapCalc _vwap = new();
         private readonly ZoneList _zones = new();
+        private readonly List<KeyZone> _keyZones = new();
         private readonly List<SignalMark> _signals = new();
         private readonly List<OfBar> _recent = new();          // rolling window (light copies)
         private readonly List<AggressionLevel> _buyLvls = new();
@@ -737,6 +766,7 @@ namespace OrderFlowSuite
 
             DetectTraps(bar, ctrl, strongVol, refP);
             _zones.Expire(bar, refP);
+            UpdateKeyZones(bar, refP);
 
             EvaluateSignals(bar, ctrl, strongVol, absScore, absorbedSide, refP);
 
@@ -800,35 +830,24 @@ namespace OrderFlowSuite
             // buyer trap: pushed above prior session high with buy aggression, closed back below
             long hiRef = refP.Hi, loRef = refP.Lo;
             if (bar.HighTick > hiRef && bar.CloseTick < hiRef && ctrl > _cfg.ControlFrac * 0.5)
-                _zones.Add(new Zone { Kind = ZoneKind.TrappedBuyers, Lo = hiRef, Hi = bar.HighTick, Side = Side.Short,
+                _zones.AddUnique(new Zone { Kind = ZoneKind.TrappedBuyers, Lo = hiRef, Hi = bar.HighTick, Side = Side.Short,
                     CreatedBar = bar.Index, RefTick = hiRef, Label = "TRAP BUYERS " + P(hiRef) });
 
             // seller trap: pushed below prior session low with sell aggression, closed back above
             if (bar.LowTick < loRef && bar.CloseTick > loRef && ctrl < -_cfg.ControlFrac * 0.5)
-                _zones.Add(new Zone { Kind = ZoneKind.TrappedSellers, Lo = bar.LowTick, Hi = loRef, Side = Side.Long,
+                _zones.AddUnique(new Zone { Kind = ZoneKind.TrappedSellers, Lo = bar.LowTick, Hi = loRef, Side = Side.Long,
                     CreatedBar = bar.Index, RefTick = loRef, Label = "TRAP SELLERS " + P(loRef) });
 
-            // reload / passover on stored aggression levels: acceptance THROUGH a level
+            // reload on stored aggression levels: acceptance THROUGH a level (deduped)
             foreach (var lv in _sellLvls)
-            {
                 if (bar.CloseTick < lv.Tick && _havePrev && _pClose >= lv.Tick)
-                {
-                    _zones.Add(new Zone { Kind = ZoneKind.ReloadSell, Lo = lv.Tick - _cfg.StopBufferTicks, Hi = lv.Tick + _cfg.StopBufferTicks,
+                    _zones.AddUnique(new Zone { Kind = ZoneKind.ReloadSell, Lo = lv.Tick - _cfg.StopBufferTicks, Hi = lv.Tick + _cfg.StopBufferTicks,
                         Side = Side.Short, CreatedBar = bar.Index, RefTick = lv.Tick, Label = "SELL RELOAD " + P(lv.Tick) });
-                    _zones.Add(new Zone { Kind = ZoneKind.Passover, Lo = lv.Tick - _cfg.StopBufferTicks, Hi = lv.Tick + _cfg.StopBufferTicks,
-                        Side = Side.Short, CreatedBar = bar.Index, RefTick = lv.Tick, Label = "PASSOVER " + P(lv.Tick) });
-                }
-            }
+
             foreach (var lv in _buyLvls)
-            {
                 if (bar.CloseTick > lv.Tick && _havePrev && _pClose <= lv.Tick)
-                {
-                    _zones.Add(new Zone { Kind = ZoneKind.ReloadBuy, Lo = lv.Tick - _cfg.StopBufferTicks, Hi = lv.Tick + _cfg.StopBufferTicks,
+                    _zones.AddUnique(new Zone { Kind = ZoneKind.ReloadBuy, Lo = lv.Tick - _cfg.StopBufferTicks, Hi = lv.Tick + _cfg.StopBufferTicks,
                         Side = Side.Long, CreatedBar = bar.Index, RefTick = lv.Tick, Label = "BUY RELOAD " + P(lv.Tick) });
-                    _zones.Add(new Zone { Kind = ZoneKind.Passover, Lo = lv.Tick - _cfg.StopBufferTicks, Hi = lv.Tick + _cfg.StopBufferTicks,
-                        Side = Side.Long, CreatedBar = bar.Index, RefTick = lv.Tick, Label = "PASSOVER " + P(lv.Tick) });
-                }
-            }
 
             // retreat zone: when trending after leaving a compression zone, the far edge is the retreat
             if (_balance.State == MarketState.Trend && _balance.HasCompression)
@@ -838,6 +857,95 @@ namespace OrderFlowSuite
                     Side = _auction.LongTermAuction == Bias.Bearish ? Side.Short : Side.Long,
                     CreatedBar = bar.Index, RefTick = edge, Label = "RETREAT " + P(edge) });
             }
+        }
+
+        // ---------------------------------------------------------------------------- scored key levels (confluence)
+        private void UpdateKeyZones(OfBar bar, ProfileResult refP)
+        {
+            long tol = Math.Max(2, _cfg.ValueBufferTicks * 2);
+
+            void Cand(long tick, string reason, int score)
+            {
+                if (tick <= 0) return;
+                KeyZone? best = null;
+                long bd = long.MaxValue;
+                foreach (var z in _keyZones)
+                {
+                    long d = Math.Abs(z.Tick - tick);
+                    if (d <= tol && d < bd) { bd = d; best = z; }
+                }
+                if (best == null)
+                {
+                    best = new KeyZone { Tick = tick, CreatedBar = bar.Index };
+                    _keyZones.Add(best);
+                }
+                if (!best.Reasons.Contains(reason)) { best.Reasons.Add(reason); best.Score = Math.Min(100, best.Score + score); }
+                best.LastSeenBar = bar.Index;
+            }
+
+            if (refP.Valid)
+            {
+                Cand(refP.Poc, "POC", 20);
+                Cand(refP.Vah, "VAH", 16);
+                Cand(refP.Val, "VAL", 16);
+                Cand(refP.Hi, "PDH", 14);
+                Cand(refP.Lo, "PDL", 14);
+            }
+            if (_dev.Result.Valid)
+            {
+                Cand(_dev.Result.Poc, "dPOC", 8);
+                var hvn = new List<long>(); var lvn = new List<long>();
+                VolumeProfileAnalyzer.DetectNodes(_dev.Vol, _dev.Result.Lo, _dev.Result.Hi, _cfg.HvnFactor, _cfg.LvnFactor, hvn, lvn, 4);
+                foreach (var t in hvn) Cand(t, "HVN", 10);
+                foreach (var t in lvn) Cand(t, "LVN", 6);
+            }
+            if (_orInit) { Cand(_orHi, "ORH", 12); Cand(_orLo, "ORL", 12); }
+            foreach (var lv in _buyLvls) Cand(lv.Tick, "BUY AGG", 10);
+            foreach (var lv in _sellLvls) Cand(lv.Tick, "SELL AGG", 10);
+            if (_cfg.UseComposite && _auction.Composite.Valid)
+            {
+                Cand(_auction.Composite.Poc, "cPOC", 10);
+                Cand(_auction.Composite.Vah, "cVAH", 8);
+                Cand(_auction.Composite.Val, "cVAL", 8);
+            }
+            DetectSwing(out long sh, out long sl);
+            if (sh > 0) Cand(sh, "SWING HIGH", 12);
+            if (sl > 0) Cand(sl, "SWING LOW", 12);
+
+            long approach = Math.Max(2, _cfg.ValueBufferTicks);
+            foreach (var z in _keyZones)
+            {
+                bool wasRes = z.Resistance;
+                z.Resistance = z.Tick >= bar.CloseTick;
+                if (z.Tests > 0 && wasRes != z.Resistance) z.Flipped = true;
+
+                bool touched = bar.HighTick >= z.Tick - approach && bar.LowTick <= z.Tick + approach;
+                if (touched && (z.LastTestBar < 0 || bar.Index - z.LastTestBar > 2)) { z.Tests++; z.LastTestBar = bar.Index; }
+
+                if (z.Resistance && bar.CloseTick > z.Tick + approach * 2) z.Broken = true;
+                else if (!z.Resistance && bar.CloseTick < z.Tick - approach * 2) z.Broken = true;
+                else if (Math.Abs(bar.CloseTick - z.Tick) <= approach * 2) z.Broken = false;
+            }
+
+            _keyZones.RemoveAll(z => z.Broken && bar.Index - z.LastSeenBar > 40);
+            if (_keyZones.Count > 40)
+            {
+                _keyZones.Sort((a, b) => a.Score.CompareTo(b.Score));
+                _keyZones.RemoveRange(0, _keyZones.Count - 40);
+            }
+        }
+
+        /// <summary>Simple 2-bar pivot on the rolling window (the bar 2 back is a local high/low).</summary>
+        private void DetectSwing(out long sh, out long sl)
+        {
+            sh = sl = 0;
+            int n = _recent.Count;
+            if (n < 5) return;
+            var m = _recent[n - 3];
+            if (m.HighTick >= _recent[n - 1].HighTick && m.HighTick >= _recent[n - 2].HighTick
+                && m.HighTick >= _recent[n - 4].HighTick && m.HighTick >= _recent[n - 5].HighTick) sh = m.HighTick;
+            if (m.LowTick <= _recent[n - 1].LowTick && m.LowTick <= _recent[n - 2].LowTick
+                && m.LowTick <= _recent[n - 4].LowTick && m.LowTick <= _recent[n - 5].LowTick) sl = m.LowTick;
         }
 
         // ---------------------------------------------------------------------------- signal pipeline
@@ -1068,6 +1176,11 @@ namespace OrderFlowSuite
                 levels.Add(new LevelLine { Tick = _auction.Composite.Val, Kind = ZoneKind.CompositeVal, Label = "cVAL " + P(_auction.Composite.Val) });
             }
             snap.Levels = levels.ToArray();
+
+            // scored key zones, strongest first
+            var kz = new List<KeyZone>(_keyZones);
+            kz.Sort((a, b) => b.Score.CompareTo(a.Score));
+            snap.KeyZones = kz.ToArray();
 
             snap.StateNote = DescribeState();
             snap.DebugLines = BuildDebug(refP);

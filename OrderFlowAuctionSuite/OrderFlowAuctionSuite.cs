@@ -113,7 +113,7 @@ namespace OrderFlowAuctionSuiteAtas
         #region Settings — DELTA / AGGRESSION
         [Range(1, 10)]
         [Display(Name = "Aggression levels / side", GroupName = "02. Delta / Aggression", Order = 10)]
-        public int AggressionLevelsPerSide { get; set; } = 3;
+        public int AggressionLevelsPerSide { get; set; } = 2;
 
         [Display(Name = "Min aggression volume", GroupName = "02. Delta / Aggression", Order = 20)]
         public decimal MinAggressionVol { get; set; } = 100;
@@ -163,11 +163,11 @@ namespace OrderFlowAuctionSuiteAtas
 
         [Range(1, 100)]
         [Display(Name = "Min score to show", GroupName = "05. Signals", Order = 50)]
-        public int MinScoreToShow { get; set; } = 50;
+        public int MinScoreToShow { get; set; } = 60;
 
         [Display(Name = "Signal quality filter", GroupName = "05. Signals", Order = 60,
             Description = "Off = none, All = every signal, Valid+ = 65+, High only = 80+.")]
-        public SignalFilter Filter { get; set; } = SignalFilter.All;
+        public SignalFilter Filter { get; set; } = SignalFilter.ValidPlus;
 
         [Display(Name = "Min reward:risk", GroupName = "05. Signals", Order = 70)]
         public decimal MinRewardRisk { get; set; } = 1.2m;
@@ -178,7 +178,7 @@ namespace OrderFlowAuctionSuiteAtas
 
         [Range(0, 100)]
         [Display(Name = "Min bars between signals", GroupName = "05. Signals", Order = 90)]
-        public int MinBarsBetweenSignals { get; set; } = 3;
+        public int MinBarsBetweenSignals { get; set; } = 5;
 
         [Range(0, 20)]
         [Display(Name = "Value tolerance (ticks)", GroupName = "05. Signals", Order = 100)]
@@ -208,8 +208,19 @@ namespace OrderFlowAuctionSuiteAtas
         [Display(Name = "Show aggression levels", GroupName = "06. Visuals", Order = 40)]
         public bool ShowAggression { get; set; } = true;
 
-        [Display(Name = "Show zones", GroupName = "06. Visuals", Order = 50)]
+        [Display(Name = "Show scored zones", GroupName = "06. Visuals", Order = 50)]
         public bool ShowZones { get; set; } = true;
+
+        [Range(3, 40)]
+        [Display(Name = "Max zones shown", GroupName = "06. Visuals", Order = 51)]
+        public int MaxKeyZones { get; set; } = 12;
+
+        [Range(0, 100)]
+        [Display(Name = "Min zone score", GroupName = "06. Visuals", Order = 52)]
+        public int MinZoneScore { get; set; } = 40;
+
+        [Display(Name = "Show signal triangles", GroupName = "06. Visuals", Order = 53)]
+        public bool ShowSignals { get; set; } = true;
 
         [Display(Name = "Show VWAP", GroupName = "06. Visuals", Order = 60)]
         public bool ShowVwap { get; set; } = true;
@@ -224,7 +235,7 @@ namespace OrderFlowAuctionSuiteAtas
         public bool ShowDashboard { get; set; } = true;
 
         [Display(Name = "Dashboard corner", GroupName = "06. Visuals", Order = 100)]
-        public DashboardCorner Corner { get; set; } = DashboardCorner.TopRight;
+        public DashboardCorner Corner { get; set; } = DashboardCorner.BottomLeft;
 
         [Range(7, 20)]
         [Display(Name = "Font size", GroupName = "06. Visuals", Order = 110)]
@@ -427,9 +438,8 @@ namespace OrderFlowAuctionSuiteAtas
                 int barW = Math.Max(1, (int)ChartInfo.PriceChartContainer.BarsWidth);
 
                 if (ShowVwap && snap.VwapValid) DrawVwap(context, region, snap);
-                DrawLevels(context, region, snap);
-                if (ShowZones) DrawZones(context, region, barW, snap);
-                DrawSignals(context, region, barW, snap);
+                if (ShowZones) DrawKeyZones(context, region, snap);
+                if (ShowSignals) DrawSignals(context, region, barW, snap);
                 if (ShowDashboard) DrawDashboard(context, region, snap);
             }
             catch (Exception ex)
@@ -457,67 +467,49 @@ namespace OrderFlowAuctionSuiteAtas
             }
         }
 
-        private void DrawLevels(RenderContext ctx, Rectangle region, DisplaySnapshot snap)
+        // Scored support/resistance zones drawn as horizontal lines with a right-edge "score | ROLE | reasons | status" label.
+        private void DrawKeyZones(RenderContext ctx, Rectangle region, DisplaySnapshot snap)
         {
-            foreach (var lv in snap.Levels)
+            var usedY = new List<int>();
+            int reserve = 300;                       // px kept clear on the right for labels
+            int shown = 0;
+
+            foreach (var z in snap.KeyZones)
             {
-                if (!WantLevel(lv.Kind)) continue;
-                Color c = LevelColor(lv.Kind);
-                HLine(ctx, region, lv.Tick, snap, c, lv.Label, dashed: lv.Kind is ZoneKind.Hvn or ZoneKind.Lvn or ZoneKind.BuyAggression or ZoneKind.SellAggression);
+                if (shown >= MaxKeyZones) break;
+                if (z.Score < MinZoneScore) continue;
+
+                int y = ChartInfo.GetYByPrice((decimal)((double)z.Tick * snap.TickSize), false);
+                if (y < region.Top + 2 || y > region.Bottom - 2) continue;
+
+                Color c = ZoneColor(z);
+                int alpha = z.Broken ? 45 : 160;
+                ctx.DrawLine(new RenderPen(Alpha(c, alpha), z.Score >= 80 ? 2 : 1), region.Left, y, region.Right - reserve, y);
+
+                string role = z.Resistance ? "RESISTANCE" : "SUPPORT";
+                if (z.Flipped) role = z.Resistance ? "FLIP RESIST" : "FLIP SUPPORT";
+                string label = z.Score + " | " + role + " | " + z.ReasonText(3) + " | " + z.Status;
+                var sz = ctx.MeasureString(label, _small);
+                int lh = (int)sz.Height;
+
+                bool overlap = false;
+                foreach (var uy in usedY) if (Math.Abs(uy - y) < lh + 1) { overlap = true; break; }
+                if (overlap) continue;               // keep the line, skip a colliding label
+                usedY.Add(y);
+
+                int lx = region.Right - (int)sz.Width - 12;
+                ctx.FillRectangle(Alpha(c, z.Broken ? 70 : 225), new Rectangle(lx - 5, y - lh / 2 - 1, (int)sz.Width + 10, lh + 3), 3);
+                ctx.DrawString(label, _small, Color.White, lx, y - lh / 2);
+                shown++;
             }
         }
 
-        private bool WantLevel(ZoneKind k) => k switch
+        private Color ZoneColor(KeyZone z)
         {
-            ZoneKind.Vah or ZoneKind.Val or ZoneKind.Poc => ShowValueLines,
-            ZoneKind.Hvn or ZoneKind.Lvn => ShowNodes,
-            ZoneKind.BuyAggression or ZoneKind.SellAggression => ShowAggression,
-            ZoneKind.CompositePoc or ZoneKind.CompositeVah or ZoneKind.CompositeVal => ShowComposite,
-            _ => true
-        };
-
-        private Color LevelColor(ZoneKind k) => k switch
-        {
-            ZoneKind.Vah => D(BearColor),
-            ZoneKind.Val => D(BullColor),
-            ZoneKind.Poc => D(PocColor),
-            ZoneKind.Hvn => D(NodeColor),
-            ZoneKind.Lvn => Alpha(D(NodeColor), 150),
-            ZoneKind.BuyAggression => D(BullColor),
-            ZoneKind.SellAggression => D(BearColor),
-            ZoneKind.CompositePoc or ZoneKind.CompositeVah or ZoneKind.CompositeVal => D(CompositeColor),
-            _ => D(PanelText)
-        };
-
-        private void DrawZones(RenderContext ctx, Rectangle region, int barW, DisplaySnapshot snap)
-        {
-            int first = FirstVisibleBarNumber, last = LastVisibleBarNumber;
-            foreach (var z in snap.Zones)
-            {
-                if (z.CreatedBar > last) continue;
-                int x1 = ChartInfo.GetXByBar(Math.Max(z.CreatedBar, first));
-                int x2 = z.EndBar >= 0 ? ChartInfo.GetXByBar(z.EndBar) + barW : region.Right - 4;
-                if (x2 < region.Left) continue;
-                int yTop = ChartInfo.GetYByPrice((decimal)((double)z.Hi * snap.TickSize), false);
-                int yBot = ChartInfo.GetYByPrice((decimal)((double)z.Lo * snap.TickSize), false);
-                int y = Math.Min(yTop, yBot), h = Math.Max(2, Math.Abs(yBot - yTop));
-                Color c = ZoneColor(z.Kind);
-                ctx.FillRectangle(Alpha(c, z.EndBar >= 0 ? 22 : 40), new Rectangle(x1, y, Math.Max(2, x2 - x1), h));
-                ctx.FillRectangle(Alpha(c, 120), new Rectangle(x1, y, 3, h));
-                if (z.CreatedBar >= first - 2)
-                    ctx.DrawString(z.Label, _small, c, x1 + 5, y + 1);
-            }
+            if (z.Flipped) return D(PocColor);
+            if (z.Reasons.Contains("POC") || z.Reasons.Contains("cPOC") || z.Reasons.Contains("dPOC")) return D(PocColor);
+            return z.Resistance ? D(BearColor) : D(BullColor);
         }
-
-        private Color ZoneColor(ZoneKind k) => k switch
-        {
-            ZoneKind.TrappedBuyers or ZoneKind.ReloadSell => D(BearColor),
-            ZoneKind.TrappedSellers or ZoneKind.ReloadBuy => D(BullColor),
-            ZoneKind.Retreat => D(NodeColor),
-            ZoneKind.Passover => D(CompositeColor),
-            ZoneKind.Compression => Alpha(D(PanelText), 120),
-            _ => D(PanelText)
-        };
 
         private void DrawSignals(RenderContext ctx, Rectangle region, int barW, DisplaySnapshot snap)
         {
@@ -525,53 +517,26 @@ namespace OrderFlowAuctionSuiteAtas
             foreach (var s in snap.Signals)
             {
                 if (!PassesFilter(s.Quality)) continue;
-                if (s.Bar < first - 2 || s.Bar > last + 2) continue;
+                if (s.Bar < first - 1 || s.Bar > last + 1) continue;
 
                 bool buy = s.Side == Side.Long;
                 int x = ChartInfo.GetXByBar(s.Bar) + barW / 2;
-                Color c = buy ? D(BullColor) : D(BearColor);
-
-                if (ShowSignalLevels)
-                {
-                    int xEnd = Math.Min(region.Right - 4, x + barW * 14 + 40);
-                    int yE = ChartInfo.GetYByPrice((decimal)((double)s.EntryTick * snap.TickSize), false);
-                    int yS = ChartInfo.GetYByPrice((decimal)((double)s.StopTick * snap.TickSize), false);
-                    int yT = ChartInfo.GetYByPrice((decimal)((double)s.TargetTick * snap.TickSize), false);
-                    ctx.DrawLine(new RenderPen(Alpha(Color.Gray, 130), 1), x, yE, xEnd, yE);
-                    ctx.DrawLine(new RenderPen(Alpha(D(BearColor), 120), 1), x, yS, xEnd, yS);
-                    ctx.DrawLine(new RenderPen(Alpha(D(BullColor), 120), 1), x, yT, xEnd, yT);
-                }
-
-                string tag = (buy ? "▲ " : "▼ ") + s.Side + " " + s.Score;
-                var sz = ctx.MeasureString(tag, _small);
                 int refTick = buy ? (int)s.LowTick : (int)s.HighTick;
                 int yRef = ChartInfo.GetYByPrice((decimal)((double)refTick * snap.TickSize), false);
-                int off = buy ? 8 : -8 - (int)sz.Height;
-                int tx = x - (int)sz.Width / 2, ty = yRef + off;
-                ctx.FillRectangle(Alpha(c, 235), new Rectangle(tx - 3, ty - 2, (int)sz.Width + 6, (int)sz.Height + 4), 3);
-                ctx.DrawString(tag, _small, Color.White, tx, ty);
+                int tip = buy ? yRef + 6 : yRef - 6;
+                Triangle(ctx, x, tip, 6, buy, buy ? D(BullColor) : D(BearColor));
             }
         }
 
-        private void HLine(RenderContext ctx, Rectangle region, long tick, DisplaySnapshot snap, Color color, string label, bool dashed)
+        // small filled triangle marker (buy points up below the bar, sell points down above it)
+        private static void Triangle(RenderContext ctx, int cx, int tipY, int size, bool up, Color c)
         {
-            int y = ChartInfo.GetYByPrice((decimal)((double)tick * snap.TickSize), false);
-            if (y < region.Top - 2 || y > region.Bottom + 2) return;
-
-            if (dashed)
+            var pen = new RenderPen(c, 1);
+            for (int k = 0; k <= size; k++)
             {
-                for (int x = region.Left; x < region.Right - 8; x += 10)
-                    ctx.DrawLine(new RenderPen(Alpha(color, 140), 1), x, y, x + 5, y);
+                int y = up ? tipY + k : tipY - k;
+                ctx.DrawLine(pen, cx - k, y, cx + k, y);
             }
-            else
-            {
-                ctx.DrawLine(new RenderPen(Alpha(color, 160), 1), region.Left, y, region.Right - 4, y);
-            }
-
-            var sz = ctx.MeasureString(label, _small);
-            int lx = region.Right - (int)sz.Width - 8;
-            ctx.FillRectangle(Alpha(Color.Black, 140), new Rectangle(lx - 2, y - (int)sz.Height / 2, (int)sz.Width + 4, (int)sz.Height));
-            ctx.DrawString(label, _small, color, lx, y - (int)sz.Height / 2);
         }
 
         private void DrawDashboard(RenderContext ctx, Rectangle region, DisplaySnapshot snap)
