@@ -145,9 +145,10 @@ namespace OverPowerOF
         private int _fontSize = 9;
 
         // alert colors
-        private CrossColor _alertBuyBg = CrossColor.FromArgb(255, 0, 120, 60);
-        private CrossColor _alertSellBg = CrossColor.FromArgb(255, 140, 20, 30);
-        private CrossColor _alertFg = CrossColor.FromArgb(255, 245, 245, 245);
+        // AddAlert (classic ATAS) takes System.Drawing.Color, not the WPF color type.
+        private readonly Color _alertBuyBg = Color.FromArgb(255, 0, 120, 60);
+        private readonly Color _alertSellBg = Color.FromArgb(255, 140, 20, 30);
+        private readonly Color _alertFg = Color.FromArgb(255, 245, 245, 245);
 
         #endregion
 
@@ -178,7 +179,7 @@ namespace OverPowerOF
         [Range(50, 90)]
         [Display(Name = "Value area %", GroupName = "01. Value Area", Order = 20,
             Description = "Percent of session volume that defines the value area (VAH/VAL). 70% is standard.")]
-        public int ValueAreaPercent { get; set; } = 70;
+        public int ValueAreaPct { get; set; } = 70;
 
         [Range(1, 120)]
         [Display(Name = "Opening range (min)", GroupName = "01. Value Area", Order = 30,
@@ -781,7 +782,7 @@ namespace OverPowerOF
             }
 
             poc = bestTick;
-            double target = total * ValueAreaPercent / 100.0;
+            double target = total * ValueAreaPct / 100.0;
             double acc = best;
             long up = bestTick, dn = bestTick;
 

@@ -36,7 +36,16 @@
   <PropertyGroup Condition=" '$(Platform)' != 'Cross' ">
     <TargetFramework>net10.0-windows</TargetFramework>
     <UseWPF>true</UseWPF>
-    <ATAS_BASE Condition=" '$(ATAS_BASE)' == '' ">C:\Program Files (x86)\ATAS Platform</ATAS_BASE>
+  </PropertyGroup>
+
+  <!-- Auto-detect the ATAS install folder (classic) when ATAS_BASE was not supplied. -->
+  <PropertyGroup Condition=" '$(Platform)' != 'Cross' and '$(ATAS_BASE)' == '' ">
+    <ATAS_BASE Condition="Exists('$(LocalAppData)\ATAS Platform\ATAS.Indicators.dll')">$(LocalAppData)\ATAS Platform</ATAS_BASE>
+    <ATAS_BASE Condition="'$(ATAS_BASE)'=='' and Exists('C:\Program Files\ATAS Platform\ATAS.Indicators.dll')">C:\Program Files\ATAS Platform</ATAS_BASE>
+    <ATAS_BASE Condition="'$(ATAS_BASE)'=='' and Exists('C:\Program Files (x86)\ATAS Platform\ATAS.Indicators.dll')">C:\Program Files (x86)\ATAS Platform</ATAS_BASE>
+    <ATAS_BASE Condition="'$(ATAS_BASE)'=='' and Exists('$(AppData)\ATAS Platform\ATAS.Indicators.dll')">$(AppData)\ATAS Platform</ATAS_BASE>
+    <ATAS_BASE Condition="'$(ATAS_BASE)'=='' and Exists('$(LocalAppData)\Programs\ATAS Platform\ATAS.Indicators.dll')">$(LocalAppData)\Programs\ATAS Platform</ATAS_BASE>
+    <ATAS_BASE Condition="'$(ATAS_BASE)'==''">C:\Program Files (x86)\ATAS Platform</ATAS_BASE>
   </PropertyGroup>
 
   <!-- ATAS X (Avalonia) native build -->

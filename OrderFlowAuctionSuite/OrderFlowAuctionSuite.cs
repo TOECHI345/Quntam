@@ -60,8 +60,9 @@ namespace OrderFlowAuctionSuiteAtas
         private RenderFont _small = new("Arial", 8);
         private int _fontSize = 9;
 
-        private CrossColor _alertBg = CrossColor.FromArgb(255, 30, 30, 40);
-        private CrossColor _alertFg = CrossColor.FromArgb(255, 245, 245, 245);
+        // AddAlert (classic ATAS) takes System.Drawing.Color, not the WPF color type.
+        private readonly Color _alertBg = Color.FromArgb(255, 30, 30, 40);
+        private readonly Color _alertFg = Color.FromArgb(255, 245, 245, 245);
 
         #endregion
 
@@ -83,7 +84,7 @@ namespace OrderFlowAuctionSuiteAtas
         #region Settings — GENERAL / PROFILE
         [Range(50, 90)]
         [Display(Name = "Value area %", GroupName = "01. Profile", Order = 10)]
-        public int ValueAreaPercent { get; set; } = 70;
+        public int ValueAreaPct { get; set; } = 70;
 
         [Range(1, 30)]
         [Display(Name = "Bias lookback sessions", GroupName = "01. Profile", Order = 20)]
@@ -265,7 +266,7 @@ namespace OrderFlowAuctionSuiteAtas
 
         private EngineConfig BuildConfig() => new()
         {
-            ValueAreaPercent = ValueAreaPercent,
+            ValueAreaPercent = ValueAreaPct,
             LookbackSessions = LookbackSessions,
             CompositeSessions = CompositeSessions,
             UseComposite = UseComposite,
